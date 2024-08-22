@@ -69,7 +69,7 @@ void setup() {
 // Initialize the random number generator
   // Generate a private key using Crypto's RNG
     for (int i = 0; i < sizeof(privateKey); i++) {
-        privateKey[i] = random(0, 256);  // Fill the privateKey array with random bytes
+        privateKey[i] = random(0, 256); 
     }
 
     // Generate the public key from the private key
@@ -82,7 +82,7 @@ void loop() {
     // Your loop code here, if needed
 
     // Example RAA and HDA
-    uint16_t RAA = 16376; // Replace with actual RAA
+    uint16_t RAA = 16376; // RAA
     uint16_t HDA = 1025; // WMU
 
 
@@ -133,11 +133,7 @@ void loop() {
 
 
 
-
-
-
-// Example for creating a manifest hash and constructing a message
-#include <SHAKE.h> // Ensure you're using the correct library for cSHAKE128
+// TESTING 
 
 void createManifest(uint8_t* previousManifestHash, uint8_t* currentManifestHash, uint8_t* dripLinkHash, std::vector<uint8_t*> astmMessageHashes) {
     // Initialize cSHAKE128
