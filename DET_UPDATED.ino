@@ -25,7 +25,8 @@ std::vector<uint8_t> createDRIPLink(const uint8_t *parentDET, size_t parentDETLe
     }
 
     // Sign the Child DET with the Parent's private key
-    Ed25519::sign(parentSignature, privateKey, det, detLen);
+Ed25519::sign(parentSignature, privateKey, publicKey, det, detLen);
+
 
     // Add Parent Signature to the DRIP Link
     for (int i = 0; i < 64; i++) {
@@ -100,8 +101,9 @@ void createWrapper(uint8_t *privateKey, const std::vector<uint8_t> &payload, uin
     // Create a buffer for the signature
     uint8_t signatureBuffer[64];
 
-    // Sign the payload using the Ed25519 private key
-    Ed25519::sign(signatureBuffer, privateKey, payload.data(), payload.size());
+   // Sign the payload using the Ed25519 private key and public key
+Ed25519::sign(signatureBuffer, privateKey, publicKey, payload.data(), payload.size());
+
 
     // Copy the generated signature to the provided buffer
     memcpy(signature, signatureBuffer, 64);
