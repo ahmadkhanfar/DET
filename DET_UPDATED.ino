@@ -186,7 +186,7 @@ void loop() {
 
     // Print the private and public keys in hexadecimal format
     Serial.print("Private Key: ");
-    for (int i = 0; 32; i++) {
+    for (int i = 0; i < 32; i++) {
         Serial.print(privateKey[i], HEX);
         Serial.print(" ");
     }
@@ -199,9 +199,8 @@ void loop() {
     }
     Serial.println();
 
-    // Print final free heap memory
-    Serial.print("Final free heap: ");
+     Serial.print("Final free heap: ");
     Serial.println(ESP.getFreeHeap());
 
-    delay(5000);  //
+    delay(5000);  // Repeat every 5 seconds
 }
