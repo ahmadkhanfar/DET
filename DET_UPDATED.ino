@@ -4,9 +4,36 @@
 #include "KeccakP-1600-inplace32BI.c"  // Include the core Keccak permutation
 #include <vector>
 
-// Define key variables for DET and Wrapper generation
+// Define key variables for DET, DRIP Link, and Wrapper generation
 uint8_t privateKey[32];
 uint8_t publicKey[32];
+uint8_t parentDET[16];  // Example Parent DET
+uint8_t parentSignature[64];  // Signature by Parent
+
+// Function to create DRIP Links
+std::vector<uint8_t> createDRIPLink(const uint8_t *parentDET, size_t parentDETLen, const uint8_t *det, size_t detLen) {
+    std::vector<uint8_t> dripLink;
+
+    // Add Parent DET to the DRIP Link
+    for (size_t i = 0; i < parentDETLen; i++) {
+        dripLink.push_back(parentDET[i]);
+    }
+
+    // Add Child DET (the drone's DET)
+    for (size_t i = 0; i < detLen; i++) {
+        dripLink.push_back(det[i]);
+    }
+
+    // Sign the Child DET with the Parent's private key
+    Ed25519::sign(parentSignature, privateKey, det, detLen);
+
+    // Add Parent Signature to the DRIP Link
+    for (int i = 0; i < 64; i++) {
+        dripLink.push_back(parentSignature[i]);
+    }
+
+    return dripLink;
+}
 
 // Custom implementation to absorb data and squeeze output using Keccak P-1600 for cSHAKE128
 void cshake128(const uint8_t *input, size_t inputLen, const uint8_t *customization, size_t customLen, uint8_t *output, size_t outputLen) {
@@ -124,9 +151,20 @@ void setup() {
     // Create payload containing the DET and public key
     std::vector<uint8_t> payload = createPayload(det, sizeof(det), publicKey, sizeof(publicKey));
 
+    // Create DRIP Links with parent DET and signature
+    std::vector<uint8_t> dripLink = createDRIPLink(parentDET, sizeof(parentDET), det, sizeof(det));
+
     // Create and sign the Wrapper (payload)
     uint8_t signature[64];
     createWrapper(privateKey, payload, signature);
+
+    // Print the DRIP Link
+    Serial.println("Generated DRIP Link:");
+    for (size_t i = 0; i < dripLink.size(); i++) {
+        Serial.print(dripLink[i], HEX);
+        Serial.print(" ");
+    }
+    Serial.println();
 
     // Print the signed payload (Wrapper)
     Serial.println("Signed Wrapper:");
@@ -148,7 +186,7 @@ void loop() {
 
     // Print the private and public keys in hexadecimal format
     Serial.print("Private Key: ");
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; 32; i++) {
         Serial.print(privateKey[i], HEX);
         Serial.print(" ");
     }
@@ -165,5 +203,5 @@ void loop() {
     Serial.print("Final free heap: ");
     Serial.println(ESP.getFreeHeap());
 
-    delay(5000);  // Delay for 5 seconds before repeating
+    delay(5000);  //
 }
