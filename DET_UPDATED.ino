@@ -2,8 +2,9 @@
 #include <RNG.h>
 #include <KeccakP-1600-SnP.h>
 #include "KeccakP-1600-inplace32BI.c"  // Include the core Keccak permutation
+#include <vector>
 
-// Define the key variables
+// Define key variables for DET and Wrapper generation
 uint8_t privateKey[32];
 uint8_t publicKey[32];
 
@@ -30,7 +31,7 @@ void cshake128(const uint8_t *input, size_t inputLen, const uint8_t *customizati
     Serial.println(ESP.getFreeHeap());
 }
 
-// Example function to generate DET using cSHAKE128
+// Function to generate DET using cSHAKE128
 String det_cshake128(const uint8_t *publicKey, size_t pubKeyLen, uint16_t raa, uint16_t hda, const uint8_t *hi, size_t hiLen) {
     uint8_t output[16];  // DET is 128 bits (16 bytes)
 
@@ -67,6 +68,42 @@ String det_cshake128(const uint8_t *publicKey, size_t pubKeyLen, uint16_t raa, u
     return det;
 }
 
+// Function to sign the payload (Wrapper)
+void createWrapper(uint8_t *privateKey, const std::vector<uint8_t> &payload, uint8_t *signature) {
+    // Create a buffer for the signature
+    uint8_t signatureBuffer[64];
+
+    // Sign the payload using the Ed25519 private key
+    Ed25519::sign(signatureBuffer, privateKey, payload.data(), payload.size());
+
+    // Copy the generated signature to the provided buffer
+    memcpy(signature, signatureBuffer, 64);
+
+    Serial.println("Wrapper created with signature:");
+    for (int i = 0; i < 64; i++) {
+        Serial.print(signature[i], HEX);
+        Serial.print(" ");
+    }
+    Serial.println();
+}
+
+// Function to generate the payload (B-RID and DET)
+std::vector<uint8_t> createPayload(const uint8_t *det, size_t detLen, const uint8_t *publicKey, size_t publicKeyLen) {
+    std::vector<uint8_t> payload;
+
+    // Append DET to the payload
+    for (size_t i = 0; i < detLen; i++) {
+        payload.push_back(det[i]);
+    }
+
+    // Append public key to the payload
+    for (size_t i = 0; i < publicKeyLen; i++) {
+        payload.push_back(publicKey[i]);
+    }
+
+    return payload;
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.println("Starting DET generation...");
@@ -75,13 +112,29 @@ void setup() {
     Serial.print("Total heap size: ");
     Serial.println(ESP.getHeapSize());
 
-    // Initialize the random number generator and generate private key
+    // Initialize random private key and generate public key
     for (int i = 0; i < sizeof(privateKey); i++) {
         privateKey[i] = random(0, 256); 
     }
-
-    // Generate the public key from the private key
     Ed25519::derivePublicKey(publicKey, privateKey);
+
+    // Example DET (16 bytes)
+    uint8_t det[16] = {0x00, 0xB5, 0xA6, 0x9C, 0x79, 0x5D, 0xF5, 0xD5, 0xF0, 0x08, 0x7F, 0x56, 0x84, 0x3F, 0x2C, 0x40};
+
+    // Create payload containing the DET and public key
+    std::vector<uint8_t> payload = createPayload(det, sizeof(det), publicKey, sizeof(publicKey));
+
+    // Create and sign the Wrapper (payload)
+    uint8_t signature[64];
+    createWrapper(privateKey, payload, signature);
+
+    // Print the signed payload (Wrapper)
+    Serial.println("Signed Wrapper:");
+    for (int i = 0; i < payload.size(); i++) {
+        Serial.print(payload[i], HEX);
+        Serial.print(" ");
+    }
+    Serial.println();
 }
 
 void loop() {
@@ -113,13 +166,4 @@ void loop() {
     Serial.println(ESP.getFreeHeap());
 
     delay(5000);  // Delay for 5 seconds before repeating
-}
-
-// Function to create a DRIP manifest (incomplete, for future implementation)
-void createManifest(uint8_t* previousManifestHash, uint8_t* currentManifestHash, uint8_t* dripLinkHash, std::vector<uint8_t*> astmMessageHashes) {
-    // Initialize cSHAKE128 for manifest creation
-    SHAKE128 shake;
-    uint8_t evidence[64];  // For storing the evidence hash
-
-    // Further implementation needed based on the specifics of the manifest process
 }
