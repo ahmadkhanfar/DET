@@ -128,7 +128,7 @@ String det_cshake128(const uint8_t *publicKey, size_t pubKeyLen, uint16_t raa, u
     String b_hid_hda = String(hda, BIN);  // Convert HDA to 14-bit binary
     while (b_hid_hda.length() < 14) b_hid_hda = "0" + b_hid_hda;  // Ensure 14-bit length
 
-    String b_ogaid = "00000000";  // **8-bit** Suite ID (previously it was 5 bits)
+    String b_ogaid = "00000000";  // **8-bit** Suite ID 
     String input_data = b_prefix + b_hid + b_hid_hda + b_ogaid + String((char *)publicKey);  // Include public key
 
     // Customization String (Context ID)
