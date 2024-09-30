@@ -3,12 +3,69 @@
 #include <KeccakP-1600-SnP.h>
 #include "KeccakP-1600-inplace32BI.c"  // Include the core Keccak permutation
 #include <vector>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+unsigned long lastTransmissionTime = 0;  // To manage timed transmissions
+const unsigned long transmissionInterval = 5000;  // 5 seconds
+
+
+
+ // Example RAA and HDA
+uint16_t RAA = 16376;  // Example RAA
+uint16_t HDA = 1025;   // Example HDA (WMU)
+
+// Define BLE characteristics for broadcasting values
+BLECharacteristic *detCharacteristic;
+BLECharacteristic *dripLinkCharacteristic;
+BLECharacteristic *wrapperCharacteristic;
+BLECharacteristic *systemInfoCharacteristic;
 
 // Define key variables for DET, DRIP Link, and Wrapper generation
 uint8_t privateKey[32];
 uint8_t publicKey[32];
 uint8_t parentDET[16];  // Example Parent DET
 uint8_t parentSignature[64];  // Signature by Parent
+String det_str;
+
+void printMemoryAndCPUInfo() {
+    // Print total heap size
+    Serial.print("Total Heap Size: ");
+    Serial.println(ESP.getHeapSize());
+
+    // Print free heap memory
+    Serial.print("Free Heap Memory: ");
+    Serial.println(ESP.getFreeHeap());
+
+    // Print minimum free heap memory ever
+    Serial.print("Minimum Free Heap Memory: ");
+    Serial.println(ESP.getMinFreeHeap());
+
+    // Print CPU frequency (in MHz)
+    Serial.print("CPU Frequency: ");
+    Serial.println(ESP.getCpuFreqMHz());
+}
+
+
+// Function to calculate CPU load
+void printCPULoad() {
+    TaskStatus_t *taskArray;
+    UBaseType_t arraySize;
+    uint32_t totalRunTime;
+
+    arraySize = uxTaskGetNumberOfTasks();
+    taskArray = (TaskStatus_t *)pvPortMalloc(arraySize * sizeof(TaskStatus_t));
+    if (taskArray != NULL) {
+        arraySize = uxTaskGetSystemState(taskArray, arraySize, &totalRunTime);
+        totalRunTime /= 100; // Convert to percentage
+
+        for (UBaseType_t i = 0; i < arraySize; i++) {
+            Serial.printf("Task %s CPU Usage: %u%%\n", taskArray[i].pcTaskName, taskArray[i].ulRunTimeCounter / totalRunTime);
+        }
+
+        vPortFree(taskArray); // Free the memory allocated to the task array
+    }
+}
 
 // Function to create DRIP Links
 std::vector<uint8_t> createDRIPLink(const uint8_t *parentDET, size_t parentDETLen, const uint8_t *det, size_t detLen) {
@@ -60,8 +117,8 @@ void cshake128(const uint8_t *input, size_t inputLen, const uint8_t *customizati
 }
 
 // Function to generate DET using cSHAKE128
-String det_cshake128(const uint8_t *publicKey, size_t pubKeyLen, uint16_t raa, uint16_t hda, const uint8_t *hi, size_t hiLen) {
-    uint8_t output[16];  // DET is 128 bits (16 bytes)
+String det_cshake128(const uint8_t *publicKey, size_t pubKeyLen, uint16_t raa, uint16_t hda) {
+    uint8_t output[32];  // DET is 128 bits (16 bytes), but cSHAKE outputs 256 bits (32 bytes)
 
     // Prefix, HID, Suite ID
     String b_prefix = "0010000000000001000000000011";  // Example Prefix
@@ -71,7 +128,7 @@ String det_cshake128(const uint8_t *publicKey, size_t pubKeyLen, uint16_t raa, u
     String b_hid_hda = String(hda, BIN);  // Convert HDA to 14-bit binary
     while (b_hid_hda.length() < 14) b_hid_hda = "0" + b_hid_hda;  // Ensure 14-bit length
 
-    String b_ogaid = "00000101";  // Example Suite ID (5 bits)
+    String b_ogaid = "00000000";  // **8-bit** Suite ID (previously it was 5 bits)
     String input_data = b_prefix + b_hid + b_hid_hda + b_ogaid + String((char *)publicKey);  // Include public key
 
     // Customization String (Context ID)
@@ -80,21 +137,19 @@ String det_cshake128(const uint8_t *publicKey, size_t pubKeyLen, uint16_t raa, u
     // Perform cSHAKE128
     cshake128((const uint8_t *)input_data.c_str(), input_data.length(), contextID, sizeof(contextID), output, sizeof(output));
 
-    // Convert lower 64 bits of the output to a hex string
-    uint8_t lower_half_det[8];
-    memcpy(lower_half_det, output + 8, 8);  // Take the lower half (64 bits)
-    
-    String det = "";
-    for (int i = 0; i < sizeof(lower_half_det); i++) {
-        det += String(lower_half_det[i], HEX);
+    // Convert 128 bits (16 bytes) of the output to a hex string
+    uint8_t det[16];
+    memcpy(det, output, 16);  // Take 128 bits (16 bytes)
+
+    String det_str = "";
+    for (int i = 0; i < sizeof(det); i++) {
+        if (det[i] < 0x10) det_str += "0";  // Add leading zero if necessary
+        det_str += String(det[i], HEX);  // Convert byte to hexadecimal
     }
 
-    // Print free heap memory after DET creation
-    Serial.print("Free heap after DET creation: ");
-    Serial.println(ESP.getFreeHeap());
-
-    return det;
+    return det_str;
 }
+
 
 // Function to sign the payload (Wrapper)
 void createWrapper(uint8_t *privateKey, const std::vector<uint8_t> &payload, uint8_t *signature) {
@@ -133,9 +188,56 @@ std::vector<uint8_t> createPayload(const uint8_t *det, size_t detLen, const uint
     return payload;
 }
 
+
+
 void setup() {
     Serial.begin(115200);
     Serial.println("Starting DET generation...");
+
+  esp_ble_gap_set_prefered_default_phy(ESP_BLE_GAP_PHY_2M, ESP_BLE_GAP_PHY_2M);
+ // to ensure BT5  Physical layer is used 
+
+    BLEDevice::init("ESP32-DRIP");
+
+    BLEServer *pServer = BLEDevice::createServer();
+    BLEService *dripService = pServer->createService(BLEUUID("12345678-1234-5678-1234-56789abcdef0"));
+
+    // Create characteristics for DET, DRIP Links, Wrapper, and System Info
+    detCharacteristic = dripService->createCharacteristic(
+                            BLEUUID("12345678-1234-5678-1234-56789abcdef1"),
+                            BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    
+    dripLinkCharacteristic = dripService->createCharacteristic(
+                            BLEUUID("12345678-1234-5678-1234-56789abcdef2"),
+                            BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    
+    wrapperCharacteristic = dripService->createCharacteristic(
+                            BLEUUID("12345678-1234-5678-1234-56789abcdef3"),
+                            BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    
+    systemInfoCharacteristic = dripService->createCharacteristic(
+                            BLEUUID("12345678-1234-5678-1234-56789abcdef4"),
+                            BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    
+    // Start the service
+    dripService->start();
+    
+    // Start advertising the service
+    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+
+    pAdvertising->setMinPreferred(0x06);  // Set interval for extended advertising (Bluetooth 5 feature)
+    pAdvertising->setMaxPreferred(0x12);  // Max interval for extended advertising
+    pAdvertising->addServiceUUID(dripService->getUUID());
+    pAdvertising->start();
+
+
+
+
+
+
+
+
+
 
     // Total heap size
     Serial.print("Total heap size: ");
@@ -146,63 +248,87 @@ void setup() {
         privateKey[i] = random(0, 256); 
     }
     Ed25519::derivePublicKey(publicKey, privateKey);
+    
+    // Memory usage after key generation
+    Serial.print("Free Heap Memory after Key Generation: ");
+    Serial.println(ESP.getFreeHeap());
 
-    // Example DET (16 bytes)
-    uint8_t det[16] = {0x00, 0xB5, 0xA6, 0x9C, 0x79, 0x5D, 0xF5, 0xD5, 0xF0, 0x08, 0x7F, 0x56, 0x84, 0x3F, 0x2C, 0x40};
-
-    // Create payload containing the DET and public key
-    std::vector<uint8_t> payload = createPayload(det, sizeof(det), publicKey, sizeof(publicKey));
-
-    // Create DRIP Links with parent DET and signature
-    std::vector<uint8_t> dripLink = createDRIPLink(parentDET, sizeof(parentDET), det, sizeof(det));
-
-    // Create and sign the Wrapper (payload)
-    uint8_t signature[64];
-    createWrapper(privateKey, payload, signature);
-
-    // Print the DRIP Link
-    Serial.println("Generated DRIP Link:");
-    for (size_t i = 0; i < dripLink.size(); i++) {
-        Serial.print(dripLink[i], HEX);
-        Serial.print(" ");
-    }
-    Serial.println();
-
-    // Print the signed payload (Wrapper)
-    Serial.println("Signed Wrapper:");
-    for (int i = 0; i < payload.size(); i++) {
-        Serial.print(payload[i], HEX);
-        Serial.print(" ");
-    }
-    Serial.println();
+      // Generate the DET once and reuse it
+    det_str = det_cshake128(publicKey, sizeof(publicKey), RAA, HDA);
+ 
 }
 
 void loop() {
-    // Example RAA and HDA
-    uint16_t RAA = 16376;  // Example RAA
-    uint16_t HDA = 1025;   // Example HDA (WMU)
+    // Only send messages every 5 seconds
+    unsigned long currentTime = millis();
+    if (currentTime - lastTransmissionTime >= transmissionInterval) {
+        lastTransmissionTime = currentTime;
+   Serial.println("Generated DET: " + det_str);
+        // Convert the string DET back to byte array (assuming it's 16 bytes)
+        uint8_t det[16];
+        for (int i = 0; i < 16; i++) {
+            det[i] = strtol(det_str.substring(2*i, 2*i + 2).c_str(), NULL, 16);
+        }
 
-    // Generate the DET
-    String det = det_cshake128(publicKey, sizeof(publicKey), RAA, HDA, privateKey, sizeof(privateKey));
-    Serial.println("Generated DET: " + det);
+        // Create payload containing the DET and public key
+        std::vector<uint8_t> payload = createPayload(det, sizeof(det), publicKey, sizeof(publicKey));
 
-    // Print the private and public keys in hexadecimal format
-    Serial.print("Private Key: ");
-    for (int i = 0; i < 32; i++) {
-        Serial.print(privateKey[i], HEX);
-        Serial.print(" ");
+        // Create DRIP Links with parent DET and signature
+        std::vector<uint8_t> dripLink = createDRIPLink(parentDET, sizeof(parentDET), det, sizeof(det));
+
+        // Memory usage after DRIP Link creation
+        Serial.print("Free Heap Memory after DRIP Link Creation: ");
+        Serial.println(ESP.getFreeHeap());
+
+        // Create and sign the Wrapper (payload)
+        uint8_t signature[64];
+        createWrapper(privateKey, payload, signature);
+
+        // Combine payload and signature into the full Wrapper
+         std::vector<uint8_t> wrapper;
+        wrapper.insert(wrapper.end(), payload.begin(), payload.end());  // Add payload to Wrapper
+        wrapper.insert(wrapper.end(), signature, signature + 64);  // Add signature to Wrapper
+
+
+        // Print the DRIP Link
+        Serial.println("Generated DRIP Link:");
+        for (size_t i = 0; i < dripLink.size(); i++) {
+            Serial.print(dripLink[i], HEX);
+            Serial.print(" ");
+        }
+        Serial.println();
+
+        // Print the signed payload (Wrapper)
+        Serial.println("Signed Wrapper:");
+        for (int i = 0; i < wrapper.size(); i++) {
+            Serial.print(wrapper[i], HEX);
+            Serial.print(" ");
+        }
+        Serial.println();
+
+
+
+        // Update BLE characteristics
+        detCharacteristic->setValue(det, sizeof(det));
+        detCharacteristic->notify();  // Notify connected clients
+        
+        dripLinkCharacteristic->setValue((uint8_t*)&dripLink[0], dripLink.size());
+        dripLinkCharacteristic->notify();
+        
+        wrapperCharacteristic->setValue((uint8_t*)&wrapper[0], wrapper.size());
+        wrapperCharacteristic->notify();
+        
+        // Broadcast system info (heap and CPU)
+        String systemInfo = "Heap: " + String(ESP.getFreeHeap()) + " / CPU: " + String(ESP.getCpuFreqMHz());
+        systemInfoCharacteristic->setValue(systemInfo.c_str());
+        systemInfoCharacteristic->notify();
+
+
+        // Print memory and CPU information
+        Serial.print("Final free heap: ");
+        Serial.println(ESP.getFreeHeap());
+        printMemoryAndCPUInfo();
     }
-    Serial.println();
 
-    Serial.print("Public Key: ");
-    for (int i = 0; i < 32; i++) {
-        Serial.print(publicKey[i], HEX);
-        Serial.print(" ");
-    }
-    Serial.println();
-
-     Serial.print("Final free heap: ");
-    Serial.println(ESP.getFreeHeap());
-
-    delay(5000);  // Repeat every 5 seconds
+    delay(100);  // Small delay to avoid excessive CPU usage
 }
