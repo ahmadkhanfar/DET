@@ -1,8 +1,6 @@
 /* CODED BY AHMAD K. KHANFAR, 
 
 THE CODE WILL GENERATE DET 128 bit */
-
-
 #include <Ed25519.h>
 #include <RNG.h>
 #include <vector>
@@ -20,6 +18,26 @@ const unsigned long transmissionInterval = 5000;  // 5 seconds
 std::string toBinary(unsigned int value, int bits) {
     return std::bitset<64>(value).to_string().substr(64 - bits, bits);  // Convert and trim to required bits
 }
+std::string binaryToHex(const std::string& binaryStr) {
+    std::string hexStr;
+    int len = binaryStr.length();
+
+    // Iterate over every 4 bits and convert them to hex
+    for (int i = 0; i < len; i += 4) {
+        std::string fourBits = binaryStr.substr(i, 4); // Extract 4 bits
+        unsigned int decimalValue = std::stoi(fourBits, nullptr, 2); // Convert binary to decimal
+
+        // Convert decimal to hexadecimal manually
+        if (decimalValue < 10) {
+            hexStr += '0' + decimalValue; // 0-9
+        } else {
+            hexStr += 'A' + (decimalValue - 10); // A-F
+        }
+    }
+
+    return hexStr;
+}
+
 // Key variables for private and public key
 uint8_t privateKey[32];
 uint8_t publicKey[32];
@@ -41,15 +59,12 @@ DET det;
 // Function to perform the cSHAKE128 hash (Keccak P-1600) for ORCHID
 void cshake128(const uint8_t *input, size_t inputLen, const uint8_t *customization, size_t customLen, uint8_t *output, size_t outputLen) {
     KeccakP1600_state keccakState;  // Keccak state structure
-
     // Initialize the Keccak state
     KeccakP1600_StaticInitialize();
     KeccakP1600_Initialize(&keccakState);
-
     // Absorb customization string and input data
     KeccakP1600_AddBytes(&keccakState, customization, 0, customLen);
     KeccakP1600_AddBytes(&keccakState, input, 0, inputLen);
-
     // Apply the permutation
     KeccakP1600_Permute_24rounds(&keccakState);
 
@@ -59,12 +74,10 @@ void cshake128(const uint8_t *input, size_t inputLen, const uint8_t *customizati
 
 std:: string det_orchid( unsigned int hda,  unsigned int raa,  unsigned int ipv6, unsigned int suitid){
   std::string b_prefix = toBinary(ipv6, 28);
-    std::string b_hid = toBinary(raa, 14) + toBinary(hda, 14);
-   std::string b_suitid = toBinary(suitid, 8);
-
+  std::string b_hid = toBinary(raa, 14) + toBinary(hda, 14);
+  std::string b_suitid = toBinary(suitid, 8);
 // Concatenate b_prefix, b_hid, and b_ogaid to form the ORCHID left side
-    std::string h_orchid_left_bin = b_prefix + b_hid + b_suitid;
-
+  std::string h_orchid_left_bin = b_prefix + b_hid + b_suitid;
   String(toBinary(det.prefix, 28).c_str());
  // Convert the binary string to bytes (as required by cSHAKE)
     std::vector<uint8_t> h_orchid_left;
@@ -72,25 +85,27 @@ std:: string det_orchid( unsigned int hda,  unsigned int raa,  unsigned int ipv6
         std::bitset<8> byte(h_orchid_left_bin.substr(i, 8));
         h_orchid_left.push_back(byte.to_ulong());
 }
-
-
  // Append the HI (public key) to the input for the hash
   h_orchid_left.insert(h_orchid_left.end(), publicKey, publicKey + 32); 
-
   // Perform cSHAKE128 hashing (8-byte hash)
     uint8_t h_hash[8];
     cshake128(h_orchid_left.data(), h_orchid_left.size(), contextID, sizeof(contextID), h_hash, sizeof(h_hash));
 
     // Convert h_hash to a hexadecimal string
     std::string h_hash_str;
+    
     for (int i = 0; i < sizeof(h_hash); i++) {
         char buf[3];
         sprintf(buf, "%02x", h_hash[i]);
         h_hash_str += buf;
     }
 
+     std::string h_orchid_left_hex = binaryToHex(h_orchid_left_bin);
+
     // Combine the binary ORCHID left side and the hashed right side
-    std::string h_orchid = h_orchid_left_bin + h_hash_str;
+    std::string h_orchid = h_orchid_left_hex + h_hash_str;
+
+    // re-convert the h_orchid_left_bin to make sure of the values. 
 
     // Format the ORCHID into an IPv6 address-like string
     std::string formatted_orchid;
