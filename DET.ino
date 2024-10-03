@@ -1,146 +1,179 @@
+/* CODED BY AHMAD K. KHANFAR, 
+
+THE CODE WILL GENERATE DET 128 bit */
+
+
 #include <Ed25519.h>
 #include <RNG.h>
-
+#include <vector>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include <bitset>
+#include <iostream>
 #include <KeccakP-1600-SnP.h>
-#include "KeccakP-1600-inplace32BI.c" // Include the core Keccak permutation
-
-// Custom implementation to absorb data and squeeze output using Keccak P-1600
-// Define the curve
-
+#include "KeccakP-1600-inplace32BI.c"
+using namespace std;
+unsigned long lastTransmissionTime = 0;  // To manage timed transmissions
+const unsigned long transmissionInterval = 5000;  // 5 seconds
+// Function to convert an unsigned int to a binary string with leading zeros
+std::string toBinary(unsigned int value, int bits) {
+    return std::bitset<64>(value).to_string().substr(64 - bits, bits);  // Convert and trim to required bits
+}
+// Key variables for private and public key
 uint8_t privateKey[32];
 uint8_t publicKey[32];
+uint8_t contextID[] = { 0x00B5, 0xA69C, 0x795D, 0xF5D5, 0xF008, 0x7F56, 0x843F, 0x2C40 };  // Context ID for DET
+//STRUCTS 
+struct ORCHID_HASH {
+uint8_t hi[32];  
+unsigned long long hashOutput: 64; // 64-bit Hash Output (from cryptographic function)
+};
+struct DET{
+  unsigned int prefix: 28;
+  unsigned int raa = 14;
+  unsigned int hda = 14;
+  unsigned int suiteID: 8;
+  ORCHID_HASH hash; 
+};
 
-
-// Initialize the ECC object
-
+DET det;
+// Function to perform the cSHAKE128 hash (Keccak P-1600) for ORCHID
 void cshake128(const uint8_t *input, size_t inputLen, const uint8_t *customization, size_t customLen, uint8_t *output, size_t outputLen) {
-    KeccakP1600_state keccakState;  // Adjust the type name
+    KeccakP1600_state keccakState;  // Keccak state structure
 
-    // Initialize the state
+    // Initialize the Keccak state
     KeccakP1600_StaticInitialize();
     KeccakP1600_Initialize(&keccakState);
-    
-    // Absorb customization string (N) and input data
+
+    // Absorb customization string and input data
     KeccakP1600_AddBytes(&keccakState, customization, 0, customLen);
     KeccakP1600_AddBytes(&keccakState, input, 0, inputLen);
-    
-    // Apply permutation
-    KeccakP1600_Permute_24rounds(&keccakState);
-    
-    // Extract the output
-    KeccakP1600_ExtractBytes(&keccakState, output, 0, outputLen);
 
-    // Print free heap memory
-    Serial.print("Free heap during cSHAKE128: ");
-    Serial.println(ESP.getFreeHeap());
+    // Apply the permutation
+    KeccakP1600_Permute_24rounds(&keccakState);
+
+    // Extract the output (only need 8 bytes for the 64-bit hash)
+    KeccakP1600_ExtractBytes(&keccakState, output, 0, outputLen);
 }
 
-// Example of using cSHAKE128 to generate DET
-String det_cshake128(const uint8_t *publicKey, size_t pubKeyLen, uint16_t raa, uint16_t hda, const uint8_t *hi, size_t hiLen) {
-    uint8_t output[32];  // 256-bit output
-    String b_prefix = "0010000000000001000000000011";
-    String b_hid = String(raa, BIN) + String(hda, BIN);
-    String b_ogaid = "00000101";
-    String input_data = b_prefix + b_hid + b_ogaid;
+std:: string det_orchid( unsigned int hda,  unsigned int raa,  unsigned int ipv6, unsigned int suitid){
+  std::string b_prefix = toBinary(ipv6, 28);
+    std::string b_hid = toBinary(raa, 14) + toBinary(hda, 14);
+   std::string b_suitid = toBinary(suitid, 8);
 
-    // Perform cSHAKE128 on the input data with the public key as the customization string
-    cshake128((const uint8_t *)input_data.c_str(), input_data.length(), publicKey, pubKeyLen, output, sizeof(output));
-    
-    // Convert the hash output to a hex string
-    String det = "";
-    for (int i = 0; i < sizeof(output); i++) {
-        det += String(output[i], HEX);
+// Concatenate b_prefix, b_hid, and b_ogaid to form the ORCHID left side
+    std::string h_orchid_left_bin = b_prefix + b_hid + b_suitid;
+
+  String(toBinary(det.prefix, 28).c_str());
+ // Convert the binary string to bytes (as required by cSHAKE)
+    std::vector<uint8_t> h_orchid_left;
+    for (size_t i = 0; i < h_orchid_left_bin.length(); i += 8) {
+        std::bitset<8> byte(h_orchid_left_bin.substr(i, 8));
+        h_orchid_left.push_back(byte.to_ulong());
+}
+
+
+ // Append the HI (public key) to the input for the hash
+  h_orchid_left.insert(h_orchid_left.end(), publicKey, publicKey + 32); 
+
+  // Perform cSHAKE128 hashing (8-byte hash)
+    uint8_t h_hash[8];
+    cshake128(h_orchid_left.data(), h_orchid_left.size(), contextID, sizeof(contextID), h_hash, sizeof(h_hash));
+
+    // Convert h_hash to a hexadecimal string
+    std::string h_hash_str;
+    for (int i = 0; i < sizeof(h_hash); i++) {
+        char buf[3];
+        sprintf(buf, "%02x", h_hash[i]);
+        h_hash_str += buf;
     }
 
-    // Print free heap memory after DET creation
-    Serial.print("Free heap after DET creation: ");
-    Serial.println(ESP.getFreeHeap());
+    // Combine the binary ORCHID left side and the hashed right side
+    std::string h_orchid = h_orchid_left_bin + h_hash_str;
 
-    return det;
+    // Format the ORCHID into an IPv6 address-like string
+    std::string formatted_orchid;
+    for (size_t i = 0; i < h_orchid.length(); i += 4) {
+        formatted_orchid += h_orchid.substr(i, 4) + ":";
+    }
+    formatted_orchid.pop_back();  // Remove the trailing ':'
+
+    //String test = binaryToHex(h_orchid);
+
+    
+
+    Serial.println("DET ORCHID: " + String(formatted_orchid.c_str()));
+    // Serial.println(h_orchid);
+    // Serial.println(test);
+    return h_orchid;
+
 }
+
+
+
+
+
+
+void generateKeys(){
+  Ed25519::generatePrivateKey(privateKey);
+   Ed25519::derivePublicKey(publicKey, privateKey);
+  //memcpy(hi.value, publicKey, 32);
+
+}
+
+
+
+
+
+
+
+
 
 void setup() {
-    Serial.begin(115200);
-  Serial.println("Starting DET generation...");
-
-  // Total heap size
-  Serial.print("Total heap size: ");
-  Serial.println(ESP.getHeapSize());
-// Initialize the random number generator
-  // Generate a private key using Crypto's RNG
-    for (int i = 0; i < sizeof(privateKey); i++) {
-        privateKey[i] = random(0, 256); 
-    }
-
-    // Generate the public key from the private key
-    Ed25519::derivePublicKey(publicKey, privateKey);
-
-
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+  generateKeys();
+    // Setup the constat values. :
+    det.prefix = 0x2001003; 
+    det.raa = 16376; 
+    det.hda = 1025;
+    det.suiteID = 5; 
+  
+  
 }
 
 void loop() {
-    // Your loop code here, if needed
 
-    // Example RAA and HDA
-    uint16_t RAA = 16376; // RAA
-    uint16_t HDA = 1025; // WMU
+ 
+  unsigned long currentTime = millis();
+    if (currentTime - lastTransmissionTime >= transmissionInterval) {
+        lastTransmissionTime = currentTime;
+  // Convert std::string to Arduino String and print it
+        Serial.println(String(toBinary(det.prefix, 28).c_str()));  // 28 bits for IPv6 Prefix
+        Serial.println(String(toBinary(det.raa, 14).c_str()));  // 14 bits for RAA
+        Serial.println(String(toBinary(det.hda, 14).c_str()));  // 14 bits for HDA
+        Serial.println(String(toBinary(det.suiteID, 8).c_str()));  // 8 bits SUITID
+
+        for (int i = 0; i< sizeof(privateKey); i++ ){
+            Serial.print(privateKey[i]);
+        }
+          Serial.println();
+           for (int i = 0; i< sizeof(publicKey); i++ ){
+            Serial.print(publicKey[i]);
+        }
+   
+        det_orchid (det.hda, det.raa, det.prefix, det.suiteID);
 
 
 
-
-  String det = det_cshake128(publicKey , sizeof(publicKey), RAA, HDA, privateKey, sizeof(privateKey));
-    Serial.println("Generated DET: " + det);
-
-        // Print the keys in hexadecimal format
-    Serial.print("Private Key: ");
-    for (int i = 0; i < 32; i++) {
-        Serial.print(privateKey[i], HEX);
-        Serial.print(" ");
     }
-    Serial.println();
-
-    Serial.print("Public Key: ");
-    for (int i = 0; i < 32; i++) {
-        Serial.print(publicKey[i], HEX);
-        Serial.print(" ");
-    }
-    Serial.println();
-
-    Serial.print("Final free heap: ");
-    Serial.println(ESP.getFreeHeap());
 
 
-
-    delay(5000);
-    
 
 
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// TESTING 
-
-void createManifest(uint8_t* previousManifestHash, uint8_t* currentManifestHash, uint8_t* dripLinkHash, std::vector<uint8_t*> astmMessageHashes) {
-    // Initialize cSHAKE128
-    SHAKE128 shake;
-    uint8_t evidence[64]; // For storing the evidence hash
-
-
-}
 
 
