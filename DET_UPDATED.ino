@@ -11,7 +11,21 @@ THE CODE WILL GENERATE DET 128 bit */
 #include <iostream>
 #include <KeccakP-1600-SnP.h>
 #include "KeccakP-1600-inplace32BI.c"
+#include <WiFi.h>
+#include <time.h>  // For Unix timestamps
+
 using namespace std;
+
+// Wi-Fi Credentials
+const char* ssid = "Khanfar";
+const char* password = "khalid123";
+
+
+// NTP Server Settings
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 0;  // Adjust if you need a specific time zone offset
+const int daylightOffset_sec = 0;
+
 
 // Defining Parent DET as custom for now 
 // DET (16 bytes) stored as a uint8_t array
@@ -24,6 +38,14 @@ const unsigned long transmissionInterval = 5000;  // 5 seconds
 std::string toBinary(unsigned int value, int bits) {
     return std::bitset<64>(value).to_string().substr(64 - bits, bits);  // Convert and trim to required bits
 }
+
+// Helper function to insert 32-bit Unix timestamp into a vector (little-endian format)
+void insertUnixTimestamp(std::vector<uint8_t>& vec, uint32_t timestamp) {
+    for (int i = 0; i < 4; i++) {
+        vec.push_back((uint8_t)(timestamp >> (8 * i)));  // Little-endian order
+    }
+}
+
 std::string binaryToHex(const std::string& binaryStr) {
     std::string hexStr;
     int len = binaryStr.length();
@@ -50,6 +72,15 @@ void hexStringToByteArray(const std::string& hexStr, uint8_t* byteArray, size_t 
         std::string byteString = hexStr.substr(2 * i, 2);
         byteArray[i] = (uint8_t)strtol(byteString.c_str(), nullptr, 16);
     }
+}
+
+// Helper function to print a vector of uint8_t as hex values
+void printVectorHex(const std::vector<uint8_t>& vec, const char* label) {
+    Serial.print(label);
+    for (const auto& byte : vec) {
+        Serial.printf("%02X ", byte);
+    }
+    Serial.println();
 }
 
 
@@ -91,7 +122,7 @@ void cshake128(const uint8_t *input, size_t inputLen, const uint8_t *customizati
     KeccakP1600_ExtractBytes(&keccakState, output, 0, outputLen);
 }
 
-std:: string det_orchid( unsigned int hda,  unsigned int raa,  unsigned int ipv6, unsigned int suitid, uint8_t publicKey[32]){
+std:: string det_orchid( unsigned int hda,  unsigned int raa,  unsigned int ipv6, unsigned int suitid, uint8_t publicKey[32], bool isParent){
   std::string b_prefix = toBinary(ipv6, 28);
   std::string b_hid = toBinary(raa, 14) + toBinary(hda, 14);
   std::string b_suitid = toBinary(suitid, 8);
@@ -135,9 +166,21 @@ std:: string det_orchid( unsigned int hda,  unsigned int raa,  unsigned int ipv6
 
     //String test = binaryToHex(h_orchid);
 
-    
+    Serial.println();
+    if(isParent){
 
-    Serial.println("DET ORCHID: " + String(formatted_orchid.c_str()));
+    Serial.println("Parent DET ORCHID:" +String(formatted_orchid.c_str()));
+     Serial.println("Parent Public Key:");
+    }else{
+    Serial.println("DET ORCHID:" +String(formatted_orchid.c_str()));
+    Serial.println("Child Public Key:");
+    }
+           for (int i = 0; i < 32; i++) {
+        Serial.printf("%02X ", publicKey[i]);
+    }
+  Serial.println();
+
+
     // Serial.println(h_orchid);
     // Serial.println(test);
     return h_orchid;
@@ -157,6 +200,9 @@ std::vector<uint8_t> createPayload(const uint8_t *det, size_t detLen) {
     // Add DET to Payload
     payload.insert(payload.end(), det, det + detLen);
 
+    // Print the payload vector in hex
+    printVectorHex(payload, "Payload (F3411 Messages): ");
+
     return payload;
 }
 
@@ -169,13 +215,14 @@ std::vector<uint8_t> createDRIPLink(
 
     // For now, we will be generating Random DET for the Parent with Random Pair Keys. 
 
-    // Valid Not Before (current timestamp in seconds)
-    uint32_t validNotBefore = millis() / 1000;  
-    dripLink.insert(dripLink.end(), (uint8_t*)&validNotBefore, (uint8_t*)&validNotBefore + 4);
+       // Get the current Unix timestamps
+    uint32_t validNotBefore = getCurrentUnixTimestamp();  // Now
+    uint32_t validNotAfter = validNotBefore + 300;  // Valid for 5 minutes
 
-    // Valid Not After (5 minutes later, for example)
-    uint32_t validNotAfter = validNotBefore + 300; 
-    dripLink.insert(dripLink.end(), (uint8_t*)&validNotAfter, (uint8_t*)&validNotAfter + 4);
+    // Insert timestamps into the DRIP link in little-endian format
+    insertUnixTimestamp(dripLink, validNotBefore);
+    insertUnixTimestamp(dripLink, validNotAfter);
+
 
     
     // Child DET (Drone's DET)
@@ -187,12 +234,18 @@ std::vector<uint8_t> createDRIPLink(
     // Parent DET
     dripLink.insert(dripLink.end(), parentDET, parentDET + parentDETLen);
 
+    printVectorHex(dripLink, "DRIP LINK BEFORE SIGNING: ");
+
     uint8_t parentSignature[64];
     // Sign the Child DET using the Parent’s private key
     Ed25519::sign(parentSignature, privateKey, publicKey, det, detLen);
 
     // Parent Signature
     dripLink.insert(dripLink.end(), parentSignature, parentSignature + 64);
+
+       // Print the payload vector in hex
+    printVectorHex(dripLink, "DRIP LINK : ");
+
 
     return dripLink;
 }
@@ -217,12 +270,17 @@ std::vector<uint8_t> createWrapper(
     // Add DET
     wrapper.insert(wrapper.end(), det, det + 16);
 
+    printVectorHex(wrapper, "WRAPPER BEFORE SIGNING : ");
+
     // Sign the wrapper
     uint8_t signature[64];
     Ed25519::sign(signature, privateKey, publicKey, wrapper.data(), wrapper.size());
 
+   
     // Add signature to the wrapper
     wrapper.insert(wrapper.end(), signature, signature + 64);
+    printVectorHex(wrapper, "WRAPPER AFTER SIGNING : ");
+
 
     return wrapper;
 }
@@ -256,6 +314,28 @@ void generateKeys(bool isParent){
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
+
+// Connect to Wi-Fi
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.println("Connecting to WiFi...");
+    }
+    Serial.println("Connected to WiFi.");
+
+    // Initialize time from NTP server
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+    // Wait for time to be set
+    struct tm timeInfo;
+    if (!getLocalTime(&timeInfo)) {
+        Serial.println("Failed to obtain time");
+        return;
+    }
+
+    Serial.println("Time synchronized:");
+    Serial.println(&timeInfo, "%Y-%m-%d %H:%M:%S");
+
   generateKeys(true);
   generateKeys(false);
   
@@ -269,6 +349,12 @@ void setup() {
      
     
   
+}
+
+uint32_t getCurrentUnixTimestamp() {
+    time_t now;
+    time(&now);  // Get the current time in seconds since the epoch
+    return static_cast<uint32_t>(now);
 }
 
 void loop() {
@@ -291,16 +377,16 @@ void loop() {
             Serial.print(publicKey[i]);
         }
        
-       ParentDET=  det_orchid (det.hda, det.raa, det.prefix, det.suiteID, parentPublicKey);
-       childDET =  det_orchid (det.hda, det.raa, det.prefix, det.suiteID, publicKey);
+       ParentDET=  det_orchid (det.hda, det.raa, det.prefix, det.suiteID, parentPublicKey, true);
+       childDET =  det_orchid (det.hda, det.raa, det.prefix, det.suiteID, publicKey,false);
 
-
+        
         // Convert std::string DETs to uint8_t arrays
         uint8_t parentDETArray[16];
         uint8_t childDETArray[16];
         hexStringToByteArray(ParentDET, parentDETArray, sizeof(parentDETArray));
         hexStringToByteArray(childDET, childDETArray, sizeof(childDETArray));
-
+        
         // Create Payload and DRIP Link
         std::vector<uint8_t> payload = createPayload(parentDETArray, sizeof(parentDETArray));
         std::vector<uint8_t> dripLink = createDRIPLink(
@@ -308,6 +394,9 @@ void loop() {
             childDETArray, sizeof(childDETArray), 
             publicKey, sizeof(publicKey)
         );
+
+         // Create Wrapper
+        std::vector<uint8_t> wrapper = createWrapper(payload, childDETArray);
             
 
 
