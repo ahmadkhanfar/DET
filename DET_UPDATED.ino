@@ -12,6 +12,12 @@ THE CODE WILL GENERATE DET 128 bit */
 #include <KeccakP-1600-SnP.h>
 #include "KeccakP-1600-inplace32BI.c"
 using namespace std;
+
+// Defining Parent DET as custom for now 
+// DET (16 bytes) stored as a uint8_t array
+std:: string childDET; 
+std:: string ParentDET;
+
 unsigned long lastTransmissionTime = 0;  // To manage timed transmissions
 const unsigned long transmissionInterval = 5000;  // 5 seconds
 // Function to convert an unsigned int to a binary string with leading zeros
@@ -38,9 +44,22 @@ std::string binaryToHex(const std::string& binaryStr) {
     return hexStr;
 }
 
+// Helper function to convert std::string (hex) to uint8_t array
+void hexStringToByteArray(const std::string& hexStr, uint8_t* byteArray, size_t byteArrayLen) {
+    for (size_t i = 0; i < byteArrayLen; ++i) {
+        std::string byteString = hexStr.substr(2 * i, 2);
+        byteArray[i] = (uint8_t)strtol(byteString.c_str(), nullptr, 16);
+    }
+}
+
+
 // Key variables for private and public key
 uint8_t privateKey[32];
 uint8_t publicKey[32];
+
+
+uint8_t parentPrivateKey[32];
+uint8_t parentPublicKey[32];
 uint8_t contextID[] = { 0x00B5, 0xA69C, 0x795D, 0xF5D5, 0xF008, 0x7F56, 0x843F, 0x2C40 };  // Context ID for DET
 //STRUCTS 
 struct ORCHID_HASH {
@@ -72,7 +91,7 @@ void cshake128(const uint8_t *input, size_t inputLen, const uint8_t *customizati
     KeccakP1600_ExtractBytes(&keccakState, output, 0, outputLen);
 }
 
-std:: string det_orchid( unsigned int hda,  unsigned int raa,  unsigned int ipv6, unsigned int suitid){
+std:: string det_orchid( unsigned int hda,  unsigned int raa,  unsigned int ipv6, unsigned int suitid, uint8_t publicKey[32]){
   std::string b_prefix = toBinary(ipv6, 28);
   std::string b_hid = toBinary(raa, 14) + toBinary(hda, 14);
   std::string b_suitid = toBinary(suitid, 8);
@@ -146,8 +165,9 @@ std::vector<uint8_t> createDRIPLink(
     const uint8_t *parentDET, size_t parentDETLen,
     const uint8_t *det, size_t detLen,
     const uint8_t *childPublicKey, size_t publicKeyLen) {
-    
     std::vector<uint8_t> dripLink;
+
+    // For now, we will be generating Random DET for the Parent with Random Pair Keys. 
 
     // Valid Not Before (current timestamp in seconds)
     uint32_t validNotBefore = millis() / 1000;  
@@ -157,15 +177,17 @@ std::vector<uint8_t> createDRIPLink(
     uint32_t validNotAfter = validNotBefore + 300; 
     dripLink.insert(dripLink.end(), (uint8_t*)&validNotAfter, (uint8_t*)&validNotAfter + 4);
 
-    // Parent DET
-    dripLink.insert(dripLink.end(), parentDET, parentDET + parentDETLen);
-
+    
     // Child DET (Drone's DET)
     dripLink.insert(dripLink.end(), det, det + detLen);
 
-    // Child Public Key
+      // Child Public Key
     dripLink.insert(dripLink.end(), childPublicKey, childPublicKey + publicKeyLen);
 
+    // Parent DET
+    dripLink.insert(dripLink.end(), parentDET, parentDET + parentDETLen);
+
+    uint8_t parentSignature[64];
     // Sign the Child DET using the Parent’s private key
     Ed25519::sign(parentSignature, privateKey, publicKey, det, detLen);
 
@@ -212,10 +234,14 @@ std::vector<uint8_t> createWrapper(
 
 
 
-void generateKeys(){
+void generateKeys(bool isParent){
+  if(isParent){
+   Ed25519::generatePrivateKey(parentPrivateKey);
+   Ed25519::derivePublicKey(parentPublicKey, parentPrivateKey);
+   return; 
+  }
   Ed25519::generatePrivateKey(privateKey);
-   Ed25519::derivePublicKey(publicKey, privateKey);
-  //memcpy(hi.value, publicKey, 32);
+  Ed25519::derivePublicKey(publicKey, privateKey);
 
 }
 
@@ -230,20 +256,18 @@ void generateKeys(){
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
-  generateKeys();
+  generateKeys(true);
+  generateKeys(false);
+  
     // Setup the constat values. :
     det.prefix = 0x2001003; 
     det.raa = 16376; 
     det.hda = 1025;
     det.suiteID = 5; 
+    
 
-
-     // Create Payload and DRIP Link
-    std::vector<uint8_t> payload = createPayload(det, sizeof(det));
-    std::vector<uint8_t> dripLink = createDRIPLink(det, sizeof(det))
-     // Create Payload and DRIP Link
-    std::vector<uint8_t> payload = createPayload(det, sizeof(det));
-    std::vector<uint8_t> dripLink = createDRIPLink(det, sizeof(det))
+     
+    
   
 }
 
@@ -266,9 +290,25 @@ void loop() {
            for (int i = 0; i< sizeof(publicKey); i++ ){
             Serial.print(publicKey[i]);
         }
-   
-        det_orchid (det.hda, det.raa, det.prefix, det.suiteID);
+       
+       ParentDET=  det_orchid (det.hda, det.raa, det.prefix, det.suiteID, parentPublicKey);
+       childDET =  det_orchid (det.hda, det.raa, det.prefix, det.suiteID, publicKey);
 
+
+        // Convert std::string DETs to uint8_t arrays
+        uint8_t parentDETArray[16];
+        uint8_t childDETArray[16];
+        hexStringToByteArray(ParentDET, parentDETArray, sizeof(parentDETArray));
+        hexStringToByteArray(childDET, childDETArray, sizeof(childDETArray));
+
+        // Create Payload and DRIP Link
+        std::vector<uint8_t> payload = createPayload(parentDETArray, sizeof(parentDETArray));
+        std::vector<uint8_t> dripLink = createDRIPLink(
+            parentDETArray, sizeof(parentDETArray), 
+            childDETArray, sizeof(childDETArray), 
+            publicKey, sizeof(publicKey)
+        );
+            
 
 
     }
