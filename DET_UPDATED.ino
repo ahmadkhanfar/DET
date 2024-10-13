@@ -67,31 +67,39 @@ void printCPULoad() {
     }
 }
 
-// Function to create DRIP Links
-std::vector<uint8_t> createDRIPLink(const uint8_t *parentDET, size_t parentDETLen, const uint8_t *det, size_t detLen) {
+std::vector<uint8_t> createDRIPLink(
+    const uint8_t *parentDET, size_t parentDETLen,
+    const uint8_t *det, size_t detLen,
+    const uint8_t *childPublicKey, size_t publicKeyLen) {
+    
     std::vector<uint8_t> dripLink;
 
-    // Add Parent DET to the DRIP Link
-    for (size_t i = 0; i < parentDETLen; i++) {
-        dripLink.push_back(parentDET[i]);
-    }
+    // Valid Not Before (current timestamp in seconds)
+    uint32_t validNotBefore = millis() / 1000;  
+    dripLink.insert(dripLink.end(), (uint8_t*)&validNotBefore, (uint8_t*)&validNotBefore + 4);
 
-    // Add Child DET (the drone's DET)
-    for (size_t i = 0; i < detLen; i++) {
-        dripLink.push_back(det[i]);
-    }
+    // Valid Not After (5 minutes later, for example)
+    uint32_t validNotAfter = validNotBefore + 300; 
+    dripLink.insert(dripLink.end(), (uint8_t*)&validNotAfter, (uint8_t*)&validNotAfter + 4);
 
-    // Sign the Child DET with the Parent's private key
-Ed25519::sign(parentSignature, privateKey, publicKey, det, detLen);
+    // Parent DET
+    dripLink.insert(dripLink.end(), parentDET, parentDET + parentDETLen);
 
+    // Child DET (Drone's DET)
+    dripLink.insert(dripLink.end(), det, det + detLen);
 
-    // Add Parent Signature to the DRIP Link
-    for (int i = 0; i < 64; i++) {
-        dripLink.push_back(parentSignature[i]);
-    }
+    // Child Public Key
+    dripLink.insert(dripLink.end(), childPublicKey, childPublicKey + publicKeyLen);
+
+    // Sign the Child DET using the Parent’s private key
+    Ed25519::sign(parentSignature, privateKey, publicKey, det, detLen);
+
+    // Parent Signature
+    dripLink.insert(dripLink.end(), parentSignature, parentSignature + 64);
 
     return dripLink;
 }
+
 
 // Custom implementation to absorb data and squeeze output using Keccak P-1600 for cSHAKE128
 void cshake128(const uint8_t *input, size_t inputLen, const uint8_t *customization, size_t customLen, uint8_t *output, size_t outputLen) {
@@ -151,25 +159,35 @@ String det_cshake128(const uint8_t *publicKey, size_t pubKeyLen, uint16_t raa, u
 }
 
 
-// Function to sign the payload (Wrapper)
-void createWrapper(uint8_t *privateKey, const std::vector<uint8_t> &payload, uint8_t *signature) {
-    // Create a buffer for the signature
-    uint8_t signatureBuffer[64];
+std::vector<uint8_t> createWrapper(
+    const std::vector<uint8_t> &payload, const uint8_t *det) {
+    
+    std::vector<uint8_t> wrapper;
 
-   // Sign the payload using the Ed25519 private key and public key
-Ed25519::sign(signatureBuffer, privateKey, publicKey, payload.data(), payload.size());
+    // Valid Not Before (current timestamp in seconds)
+    uint32_t validNotBefore = millis() / 1000;
+    wrapper.insert(wrapper.end(), (uint8_t*)&validNotBefore, (uint8_t*)&validNotBefore + 4);
 
+    // Valid Not After (5 minutes later)
+    uint32_t validNotAfter = validNotBefore + 300;
+    wrapper.insert(wrapper.end(), (uint8_t*)&validNotAfter, (uint8_t*)&validNotAfter + 4);
 
-    // Copy the generated signature to the provided buffer
-    memcpy(signature, signatureBuffer, 64);
+    // Add payload (F3411 messages, 25–100 bytes)
+    wrapper.insert(wrapper.end(), payload.begin(), payload.end());
 
-    Serial.println("Wrapper created with signature:");
-    for (int i = 0; i < 64; i++) {
-        Serial.print(signature[i], HEX);
-        Serial.print(" ");
-    }
-    Serial.println();
+    // Add DET
+    wrapper.insert(wrapper.end(), det, det + 16);
+
+    // Sign the wrapper
+    uint8_t signature[64];
+    Ed25519::sign(signature, privateKey, publicKey, wrapper.data(), wrapper.size());
+
+    // Add signature to the wrapper
+    wrapper.insert(wrapper.end(), signature, signature + 64);
+
+    return wrapper;
 }
+
 
 // Function to generate the payload (B-RID and DET)
 std::vector<uint8_t> createPayload(const uint8_t *det, size_t detLen, const uint8_t *publicKey, size_t publicKeyLen) {
