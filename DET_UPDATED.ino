@@ -126,6 +126,88 @@ std:: string det_orchid( unsigned int hda,  unsigned int raa,  unsigned int ipv6
 }
 
 
+// Function to Create Payload (F3411 Messages)
+std::vector<uint8_t> createPayload(const uint8_t *det, size_t detLen) {
+    std::vector<uint8_t> payload;
+
+    // Add Example F3411 Messages (25 bytes per message)
+    uint8_t f3411Message[25] = {0};
+    for (int i = 0; i < 25; i++) f3411Message[i] = random(0, 256);
+    payload.insert(payload.end(), f3411Message, f3411Message + 25);
+
+    // Add DET to Payload
+    payload.insert(payload.end(), det, det + detLen);
+
+    return payload;
+}
+
+
+std::vector<uint8_t> createDRIPLink(
+    const uint8_t *parentDET, size_t parentDETLen,
+    const uint8_t *det, size_t detLen,
+    const uint8_t *childPublicKey, size_t publicKeyLen) {
+    
+    std::vector<uint8_t> dripLink;
+
+    // Valid Not Before (current timestamp in seconds)
+    uint32_t validNotBefore = millis() / 1000;  
+    dripLink.insert(dripLink.end(), (uint8_t*)&validNotBefore, (uint8_t*)&validNotBefore + 4);
+
+    // Valid Not After (5 minutes later, for example)
+    uint32_t validNotAfter = validNotBefore + 300; 
+    dripLink.insert(dripLink.end(), (uint8_t*)&validNotAfter, (uint8_t*)&validNotAfter + 4);
+
+    // Parent DET
+    dripLink.insert(dripLink.end(), parentDET, parentDET + parentDETLen);
+
+    // Child DET (Drone's DET)
+    dripLink.insert(dripLink.end(), det, det + detLen);
+
+    // Child Public Key
+    dripLink.insert(dripLink.end(), childPublicKey, childPublicKey + publicKeyLen);
+
+    // Sign the Child DET using the Parent’s private key
+    Ed25519::sign(parentSignature, privateKey, publicKey, det, detLen);
+
+    // Parent Signature
+    dripLink.insert(dripLink.end(), parentSignature, parentSignature + 64);
+
+    return dripLink;
+}
+
+
+std::vector<uint8_t> createWrapper(
+    const std::vector<uint8_t> &payload, const uint8_t *det) {
+    
+    std::vector<uint8_t> wrapper;
+
+    // Valid Not Before (current timestamp in seconds)
+    uint32_t validNotBefore = millis() / 1000;
+    wrapper.insert(wrapper.end(), (uint8_t*)&validNotBefore, (uint8_t*)&validNotBefore + 4);
+
+    // Valid Not After (5 minutes later)
+    uint32_t validNotAfter = validNotBefore + 300;
+    wrapper.insert(wrapper.end(), (uint8_t*)&validNotAfter, (uint8_t*)&validNotAfter + 4);
+
+    // Add payload (F3411 messages, 25–100 bytes)
+    wrapper.insert(wrapper.end(), payload.begin(), payload.end());
+
+    // Add DET
+    wrapper.insert(wrapper.end(), det, det + 16);
+
+    // Sign the wrapper
+    uint8_t signature[64];
+    Ed25519::sign(signature, privateKey, publicKey, wrapper.data(), wrapper.size());
+
+    // Add signature to the wrapper
+    wrapper.insert(wrapper.end(), signature, signature + 64);
+
+    return wrapper;
+}
+
+
+
+
 
 
 
@@ -154,7 +236,14 @@ void setup() {
     det.raa = 16376; 
     det.hda = 1025;
     det.suiteID = 5; 
-  
+
+
+     // Create Payload and DRIP Link
+    std::vector<uint8_t> payload = createPayload(det, sizeof(det));
+    std::vector<uint8_t> dripLink = createDRIPLink(det, sizeof(det))
+     // Create Payload and DRIP Link
+    std::vector<uint8_t> payload = createPayload(det, sizeof(det));
+    std::vector<uint8_t> dripLink = createDRIPLink(det, sizeof(det))
   
 }
 
