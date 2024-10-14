@@ -256,12 +256,13 @@ std::vector<uint8_t> createWrapper(
     
     std::vector<uint8_t> wrapper;
 
-    // Valid Not Before (current timestamp in seconds)
-    uint32_t validNotBefore = millis() / 1000;
+      // Get the current Unix timestamps
+    uint32_t validNotBefore = getCurrentUnixTimestamp();  // Now
+    
     wrapper.insert(wrapper.end(), (uint8_t*)&validNotBefore, (uint8_t*)&validNotBefore + 4);
+    
+    uint32_t validNotAfter = validNotBefore + 300;  // Valid for 5 minutes
 
-    // Valid Not After (5 minutes later)
-    uint32_t validNotAfter = validNotBefore + 300;
     wrapper.insert(wrapper.end(), (uint8_t*)&validNotAfter, (uint8_t*)&validNotAfter + 4);
 
     // Add payload (F3411 messages, 25–100 bytes)
