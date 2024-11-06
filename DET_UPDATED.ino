@@ -1,6 +1,6 @@
 /* CODED BY AHMAD K. KHANFAR, 
 
-THE CODE WILL GENERATE DET 128 bit */
+THE CODE WILL GENERATE DET 128 bit, Wrappers, and DRIP Links*/
 #include <Ed25519.h>
 #include <RNG.h>
 #include <vector>
