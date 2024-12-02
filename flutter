@@ -1,0 +1,583 @@
+import 'dart:collection';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:cryptography/cryptography.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:typed_data';
+import 'package:dnsolve/dnsolve.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+
+  const MyApp({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'BLE Scanner',
+      theme: ThemeData(primarySwatch: Colors.blue),
+      home: const BLEHomePage(),
+    );
+  }
+}
+
+class BLEHomePage extends StatefulWidget {
+  const BLEHomePage({Key? key}) : super(key: key);
+
+  @override
+  _BLEHomePageState createState() => _BLEHomePageState();
+}
+
+class _BLEHomePageState extends State<BLEHomePage> {
+
+  final FlutterBluePlus flutterBlue = FlutterBluePlus();
+  final List<BluetoothDevice> devicesList = [];
+  BluetoothDevice? connectedDevice;
+  BluetoothCharacteristic? targetCharacteristic;
+
+  final String serviceUUID = "6E400001-B5A3-F303-E0A9-E50E24DCCA9E";
+  final String characteristicUUID = "6E400003-B5A3-F303-E0A9-E50E24DCCA9E";
+  final String dripLinkCharacteristicUUID = "6E400004-B5A3-F303-E0A9-E50E24DCCA9E";
+
+
+  String receivedData = "";
+  bool isScanning = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Define a cache to store DET-to-public-key mappings
+
+    requestPermissions();
+    startScan();
+  }
+
+  /// Starts scanning for BLE devices.
+  void startScan() {
+    setState(() {
+      isScanning = true;
+      devicesList.clear();
+    });
+
+    FlutterBluePlus.startScan(timeout: const Duration(seconds: 30)).then((_) {
+      setState(() {
+        isScanning = false;
+      });
+    });
+
+    FlutterBluePlus.scanResults.listen((results) {
+      for (ScanResult result in results) {
+        if (!devicesList.contains(result.device)) {
+          setState(() {
+            devicesList.add(result.device);
+          });
+        }
+      }
+    });
+  }
+
+  /// Connects to the selected BLE device.
+  Future<void> connectToDevice(BluetoothDevice device) async {
+    try {
+      setState(() {
+        connectedDevice = device;
+      });
+      await device.connect();
+
+      // Discover services
+      List<BluetoothService> services = await device.discoverServices();
+      for (var service in services) {
+        if (service.uuid.toString().toLowerCase() == serviceUUID.toLowerCase()) {
+          for (var characteristic in service.characteristics) {
+            if (characteristic.uuid.toString().toLowerCase() ==
+                characteristicUUID.toLowerCase()) {
+              targetCharacteristic = characteristic;
+
+              // Enable notifications
+              await characteristic.setNotifyValue(true);
+              characteristic.value.listen((value) async{
+                setState(() {
+                  receivedData = utf8.decode(value);
+                });
+
+                String authResult =  await authenticateWrapper(receivedData);
+
+                setState(() {
+                  receivedData += "\nAuth Result: $authResult";
+                });
+                print(authResult);
+
+              });
+
+
+            }else if (characteristic.uuid.toString().toLowerCase() ==
+                dripLinkCharacteristicUUID.toLowerCase()){
+
+
+              // Enable notifications for the DRIP Link
+              await characteristic.setNotifyValue(true);
+              characteristic.value.listen((value) async {
+                String receivedDripLink = utf8.decode(value);
+
+                setState(() {
+                  receivedData += "\nDRIP Link: $receivedDripLink";
+                });
+                print("DRIP Link Received: $receivedDripLink");
+
+                // Authenticate the DRIP Link
+                String dripLinkAuthResult = await authenticateDripLink(receivedDripLink);
+                setState(() {
+                  receivedData += "\nDRIP Link Auth Result: $dripLinkAuthResult";
+                });
+
+
+              });
+
+
+
+
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print("Connection Error: $e");
+      disconnectDevice();
+    }
+  }
+
+  /// Disconnects from the BLE device.
+  void disconnectDevice() async {
+    if (connectedDevice != null) {
+      await connectedDevice!.disconnect();
+      setState(() {
+        connectedDevice = null;
+        targetCharacteristic = null;
+        receivedData = "";
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("BLE Scanner"),
+        actions: [
+          if (connectedDevice != null)
+            IconButton(
+              icon: const Icon(Icons.cancel),
+              onPressed: disconnectDevice,
+            )
+        ],
+      ),
+      body: connectedDevice == null
+          ? buildScanningView()
+          : buildConnectedDeviceView(),
+      floatingActionButton: connectedDevice == null
+          ? FloatingActionButton(
+        onPressed: isScanning ? null : startScan,
+        child: Icon(isScanning ? Icons.hourglass_empty : Icons.search),
+      )
+          : null,
+    );
+  }
+
+  Widget buildScanningView() {
+    if (devicesList.isEmpty && !isScanning) {
+      return const Center(
+        child: Text(
+          "No devices found. Tap the search button to scan again.",
+          style: TextStyle(fontSize: 16),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      itemCount: devicesList.length,
+      itemBuilder: (context, index) {
+        BluetoothDevice device = devicesList[index];
+        return ListTile(
+          title: Text(device.name.isNotEmpty ? device.name : "Unknown Device"),
+          subtitle: Text(device.id.toString()),
+          onTap: () => connectToDevice(device),
+        );
+      },
+    );
+  }
+
+  Widget buildConnectedDeviceView() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text(
+          "Connected to ${connectedDevice!.name}",
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 20),
+        const Text("Received Data:"),
+        Text(
+          receivedData.isNotEmpty ? receivedData : "No data received yet.",
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 20),
+        ElevatedButton(
+          onPressed: disconnectDevice,
+          child: const Text("Disconnect"),
+        ),
+      ],
+    );
+  }
+}
+
+Future<void> requestPermissions() async {
+  await [
+    Permission.bluetooth,
+    Permission.bluetoothScan,
+    Permission.bluetoothConnect,
+    Permission.location,
+  ].request();
+}
+
+Future<String> authenticateWrapper(String wrapperHex) async {
+  try {
+    // Record the start time
+    final startTime = DateTime.now();
+      final wrapperBytes = Uint8List.fromList(hexToBytes(wrapperHex));
+      final signatureBytes = wrapperBytes.sublist(wrapperBytes.length - 64);
+      final messageBytes = wrapperBytes.sublist(0, wrapperBytes.length - 64);
+
+      print("Message (Hex): ${hexEncode(Uint8List.fromList(messageBytes))}");
+      print("Signature (Hex): ${hexEncode(Uint8List.fromList(signatureBytes))}");
+// Extract DET (16 bytes before the signature, after the evidence)
+    final detBytes = messageBytes.sublist(messageBytes.length - 16, messageBytes.length);
+    final detHex = hexEncode(Uint8List.fromList(detBytes));
+    print("DET (Hex): $detHex");
+
+    // Fetch the public key via reverse DNS lookup
+    final publicKeyHex = await reverseDnsLookup(detHex);
+
+
+    if (publicKeyHex == null) {
+      print("Failed to fetch public key for DET: $detHex");
+      return "Error: Public key not found.";
+    }
+    print("Fetched Public Key: $publicKeyHex");
+    // Convert public key from hex to bytes
+    final publicKeyBytes = Uint8List.fromList(hexToBytes(publicKeyHex));
+
+      final publicKey = SimplePublicKey(publicKeyBytes, type: KeyPairType.ed25519);
+      final signature = Signature(signatureBytes, publicKey: publicKey);
+
+      final isValid = await Ed25519().verify(Uint8List.fromList(messageBytes), signature: signature);
+    // Record the end time
+    final endTime = DateTime.now();
+    // Calculate the time taken
+    final duration = endTime.difference(startTime).inMilliseconds;
+
+    print("Authentication time: $duration ms");
+      print(isValid ? "Authentication successful: Signature is valid." : "Authentication failed: Signature is invalid.");
+
+    return isValid ? "Authentication successful: Signature is valid." : "Authentication failed: Signature is invalid.";
+  } catch (e) {
+    return "Error during authentication: $e";
+  }
+}
+
+/// Helper to Encode Hex
+String hexEncode(Uint8List bytes) => bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+/// Helper to Convert Hex to Bytes
+Uint8List hexToBytes(String hex) {
+  final bytes = <int>[];
+  for (int i = 0; i < hex.length; i += 2) {
+    bytes.add(int.parse(hex.substring(i, i + 2), radix: 16));
+  }
+  return Uint8List.fromList(bytes);
+}
+
+
+
+Future<String?> reverseDnsLookup(String detHex) async {
+  // Load the cache from persistent storage
+  final cache = await PublicKeyCache.loadCache();
+
+  // Check if the DET exists in the cache
+  if (cache.containsKey(detHex)) {
+    print("Public key found in cache for DET: $detHex");
+    return cache[detHex];
+  }
+  try {
+    final detDomain = reverseDet(detHex); // Reverse DET to domain format
+    final dnsolve = DNSolve();
+    final response = await dnsolve.lookup(
+      detDomain,
+      dnsSec: false,
+      type: RecordType.txt,
+      provider: DNSProvider.google
+    );
+
+    if (response.answer?.records != null) {
+      for (final record in response.answer!.records!) {
+        if (record.rType == RecordType.txt && record.data.contains("pubkey=")) {
+          final publicKey = record.data.split("pubkey=")[1].trim();
+          // Add the public key to the cache
+          cache[detHex] = publicKey;
+
+          // Save the updated cache
+          await PublicKeyCache.saveCache(cache);
+          print("Fetched Public Key: $publicKey");
+          return publicKey;
+
+
+        }
+      }
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+String reverseDet(String detHex) {
+
+  // Convert DET into a list of bytes (2 characters per byte)
+  final bytes = <String>[];
+  for (int i = 0; i < detHex.length; i += 2) {
+    bytes.add(detHex.substring(i, i + 2));
+  }
+
+  // Reverse the byte order and join with dots
+  final reversedBytes = bytes.reversed.join('.').toLowerCase();
+
+  // Append the domain
+  return "$reversedBytes.vertexpal.com";
+}
+
+
+
+String extractPublicKeyFromDnsResponse(String response) {
+  // Parse the public key from the DNS TXT response
+  final regex = RegExp(r'pubkey=([0-9a-fA-F]+)');
+  final match = regex.firstMatch(response);
+  if (match != null) {
+    return match.group(1) ?? "Invalid response format.";
+  } else {
+    return "Public key not found in response.";
+  }
+}
+
+
+class PublicKeyCache {
+  static const String _cacheKey = "publicKeyCache";
+
+  // Load the cache from persistent storage
+  static Future<Map<String, String>> loadCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cacheString = prefs.getString(_cacheKey);
+    if (cacheString != null) {
+      return Map<String, String>.from(jsonDecode(cacheString));
+    }
+    return {};
+  }
+
+  // Save the cache to persistent storage
+  static Future<void> saveCache(Map<String, String> cache) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_cacheKey, jsonEncode(cache));
+  }
+}
+
+
+void parseDripLink(String dripLinkHex) {
+  // Convert hex string to bytes
+  Uint8List dripLinkBytes = hexToBytes(dripLinkHex);
+
+  // Extract fields
+  Uint8List validNotBeforeBytes = dripLinkBytes.sublist(0, 4);
+  Uint8List validNotAfterBytes = dripLinkBytes.sublist(4, 8);
+  Uint8List uavDetBytes = dripLinkBytes.sublist(8, 24);
+  Uint8List uavPublicKeyBytes = dripLinkBytes.sublist(24, 56);
+  Uint8List parentDetBytes = dripLinkBytes.sublist(56, 72);
+  Uint8List parentSignatureBytes = dripLinkBytes.sublist(72, 136);
+
+  // Convert fields to readable formats
+  int validNotBefore = ByteData.sublistView(validNotBeforeBytes).getUint32(0, Endian.little);
+  int validNotAfter = ByteData.sublistView(validNotAfterBytes).getUint32(0, Endian.little);
+  String uavDetHex = hexEncode(uavDetBytes);
+  String uavPublicKeyHex = hexEncode(uavPublicKeyBytes);
+  String parentDetHex = hexEncode(parentDetBytes);
+  String parentSignatureHex = hexEncode(parentSignatureBytes);
+
+  print("Valid Not Before: $validNotBefore");
+  print("Valid Not After: $validNotAfter");
+  print("UAV DET: $uavDetHex");
+  print("UAV Public Key: $uavPublicKeyHex");
+  print("Parent DET: $parentDetHex");
+  print("Parent Signature: $parentSignatureHex");
+}
+
+
+
+
+
+/*Future<bool> authenticateUAV(
+    String detHex, String wrapperSignatureHex, String uavPublicKeyHex) async {
+  try {
+    // Convert inputs to bytes
+    Uint8List detBytes = hexToBytes(detHex);
+    Uint8List signatureBytes = hexToBytes(wrapperSignatureHex);
+    Uint8List uavPublicKeyBytes = hexToBytes(uavPublicKeyHex);
+
+    // Load UAV public key
+    final publicKey = SimplePublicKey(uavPublicKeyBytes, type: KeyPairType.ed25519);
+
+    // Verify the UAV Signature
+    final signature = Signature(signatureBytes, publicKey: publicKey);
+    final isValid = await Ed25519().verify(detBytes, signature: signature);
+
+    print(isValid ? "UAV Signature is valid." : "UAV Signature is invalid.");
+    return isValid;
+  } catch (e) {
+    print("Error authenticating UAV: $e");
+    return false;
+  }
+}*/
+
+
+bool validateTimestamps(int validNotBefore, int validNotAfter) {
+  int currentTimestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  if (currentTimestamp >= validNotBefore && currentTimestamp <= validNotAfter) {
+    print("Timestamps are valid.");
+    return true;
+  } else {
+    print("Timestamps are invalid.");
+    return false;
+  }
+}
+
+
+Future<String> authenticateDripLink(String dripLinkHex) async {
+  try {
+    // Parse the DRIP Link
+    Uint8List dripLinkBytes = hexToBytes(dripLinkHex);
+    const String hdaPublicKeyHex = "3e373f3064e6da5a1a3248df708ba95bf405d13b12a169fc5017c5cdeb33baed";
+
+    // Extract fields from the DRIP Link
+    Uint8List validNotBeforeBytes = dripLinkBytes.sublist(0, 4);
+    Uint8List validNotAfterBytes = dripLinkBytes.sublist(4, 8);
+    Uint8List uavDetBytes = dripLinkBytes.sublist(8, 24);
+    Uint8List uavPublicKeyBytes = dripLinkBytes.sublist(24, 56);
+    Uint8List parentDetBytes = dripLinkBytes.sublist(56, 72);
+    Uint8List parentSignatureBytes = dripLinkBytes.sublist(72, 136);
+
+    // Convert fields to readable formats
+    int validNotBefore = ByteData.sublistView(validNotBeforeBytes).getUint32(0, Endian.little);
+    int validNotAfter = ByteData.sublistView(validNotAfterBytes).getUint32(0, Endian.little);
+    String uavDetHex = hexEncode(uavDetBytes);
+    String uavPublicKeyHex = hexEncode(uavPublicKeyBytes);
+    String parentDetHex = hexEncode(parentDetBytes);
+    String parentSignatureHex = hexEncode(parentSignatureBytes);
+
+    print("Parsed DRIP Link Fields:");
+    print("Valid Not Before: $validNotBefore");
+    print("Valid Not After: $validNotAfter");
+    print("UAV DET: $uavDetHex");
+    print("UAV Public Key: $uavPublicKeyHex");
+    print("Parent DET: $parentDetHex");
+    print("Parent Signature: $parentSignatureHex");
+
+    // Step 1: Validate timestamps
+    /*if (!validateTimestamps(validNotBefore, validNotAfter)) {
+      return "Invalid timestamps in DRIP Link.";
+    }*/
+
+
+    print("Fetched HDA Public Key: $hdaPublicKeyHex");
+
+    // Step 3: Verify Parent Signature
+    bool isParentSignatureValid = await verifyParentSignature(parentDetHex: parentDetHex,
+    parentSignatureHex: parentSignatureHex,
+      uavDetHex: uavDetHex,
+      uavPublicKeyHex: uavPublicKeyHex,
+      hdaPublicKeyHex: hdaPublicKeyHex,
+      validNotAfter: validNotAfter,
+      validNotBefore: validNotBefore
+
+    );
+    if (!isParentSignatureValid) {
+      return "Parent Signature verification failed.";
+    }
+
+    print("Parent Signature verified successfully.");
+
+    // Step 4: Authenticate the UAV
+   /* bool isUAVAuthenticated = await authenticateUAV(
+      uavDetHex,
+      parentSignatureHex, // Wrapper signature is generally needed for full UAV authentication
+      uavPublicKeyHex,
+    );
+    if (!isUAVAuthenticated) {
+      return "UAV authentication failed.";
+    }
+
+    print("UAV authentication successful.");
+*/
+    // If all steps pass
+    return "DRIP Link authenticated successfully.";
+  } catch (e) {
+    print("Error during DRIP Link authentication: $e");
+    return "Error during DRIP Link authentication: $e";
+  }
+}
+
+
+
+Future<bool> verifyParentSignature({
+  required String uavDetHex,
+  required String parentDetHex,
+  required String uavPublicKeyHex,
+  required String parentSignatureHex,
+  required String hdaPublicKeyHex,
+  required int validNotBefore,
+  required int validNotAfter,
+}) async {
+  try {
+    // Convert hex strings to bytes
+    Uint8List uavDetBytes = hexToBytes(uavDetHex);
+    Uint8List parentDetBytes = hexToBytes(parentDetHex);
+    Uint8List uavPublicKeyBytes = hexToBytes(uavPublicKeyHex);
+    Uint8List parentSignatureBytes = hexToBytes(parentSignatureHex);
+    Uint8List hdaPublicKeyBytes = hexToBytes(hdaPublicKeyHex);
+
+    // Concatenate data to be verified (HDA DET + UAV DET + UAV Public Key + Validity Periods)
+    Uint8List validityPeriodBytes = Uint8List(8)
+      ..buffer.asByteData().setUint32(0, validNotBefore, Endian.little)
+      ..buffer.asByteData().setUint32(4, validNotAfter, Endian.little);
+
+    Uint8List dataToVerify = Uint8List.fromList(
+      parentDetBytes + uavDetBytes + uavPublicKeyBytes + validityPeriodBytes,
+    );
+
+    // Verify the signature
+    final publicKey = SimplePublicKey(hdaPublicKeyBytes, type: KeyPairType.ed25519);
+    final signature = Signature(parentSignatureBytes, publicKey: publicKey);
+
+    bool isValid = await Ed25519().verify(dataToVerify, signature: signature);
+
+    print(isValid ? "Parent Signature is valid." : "Parent Signature is invalid.");
+    return isValid;
+  } catch (e) {
+    print("Error verifying Parent Signature: $e");
+    return false;
+  }
+}
+
+
+
